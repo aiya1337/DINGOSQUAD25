@@ -1,0 +1,279 @@
+/* ======================================================================= */
+/*  CHAMS STABILIZER MODULE                                                */
+/* ----------------------------------------------------------------------- */
+/*  REV 11.8 / JYE PEARSON - 1999                                          */
+/*                                                                         */
+/*  THIS MODULE IMPLEMENTS AN INTEGER FIXED-POINT CORE.                    */
+/*  (Q1.7 TWO'S COMPLEMENT, U8 STORAGE)                                    */
+/* ----------------------------------------------------------------------- */
+
+
+/* ---------- SIGNED HELPERS ---------- */
+RULE S8_NEG(x:U8) RETURNS (nx:U8) IS
+  nx := ((x ^ 255) + 1) & 255;
+  RETURN (nx);
+END;
+
+RULE S8_ABS(x:U8) RETURNS (ax:U8) IS
+  is_neg := (x & 128) = 128;
+  IF is_neg THEN
+    ax := ((x ^ 255) + 1) & 255;
+  ELSE
+    ax := x;
+  ENDIF;
+  RETURN (ax);
+END;
+
+RULE S8_SIGN(x:U8) RETURNS (sgn:U8) IS
+  neg := (x & 128) = 128;
+  IF neg THEN
+    sgn := 255;
+  ELSE
+    sgn := 1;
+  ENDIF;
+  RETURN (sgn);
+END;
+
+/* ---------- 8×8 -> 16 multiply ---------- */
+RULE U8_MUL_U16(a:U8, b:U8) RETURNS (pH:U8, pL:U8) IS
+  pH := 0;
+  pL := 0;
+  FOR i:U8 := 0; i < 8; i := i + 1 DO
+    bit_set := (b & 1) = 1;
+    IF bit_set THEN
+      t := pL + a;
+      carry := t >> 8;
+      pL := t & 255;
+      pH := (pH + carry) & 255;
+    ENDIF;
+    a := (a << 1) & 255;
+    b := b >> 1;
+  END;
+  RETURN (pH, pL);
+END;
+
+/* ---------- Q1.7 MULTIPLY ---------- */
+RULE S87_MUL(a:U8, b:U8) RETURNS (r:U8) IS
+  sa := S8_SIGN(a);
+  sb := S8_SIGN(b);
+  aa := S8_ABS(a);
+  bb := S8_ABS(b);
+
+  prod := U8_MUL_U16(aa, bb);
+  pH := prod.pH;
+  pL := prod.pL;
+
+  FOR k:U8 := 0; k < 7; k := k + 1 DO
+    tmp := ((pH << 7) | (pL >> 1)) & 255;
+    pH := pH >> 1;
+    pL := tmp;
+  END;
+
+  mag := pL;
+  signflip := (sa ^ sb) = 255;
+  IF signflip THEN
+    r := ((mag ^ 255) + 1) & 255;
+  ELSE
+    r := mag;
+  ENDIF;
+  RETURN (r);
+END;
+
+/* ---------- DOT PRODUCT ---------- */
+RULE DOT2_S87(ax:U8, ay:U8, bx:U8, by:U8) RETURNS (d:U8) IS
+  d0 := S87_MUL(ax, bx);
+  d1 := S87_MUL(ay, by);
+  d := (d0 + d1) & 255;
+  RETURN (d);
+END;
+
+/* ---------- VECTOR LENGTH ---------- */
+RULE LEN2_S87(x:U8, y:U8) RETURNS (len:U8) IS
+  p := U8_MUL_U16(x, x);
+  q := U8_MUL_U16(y, y);
+
+  sL := (p.pL + q.pL) & 255;
+  carry := (p.pL + q.pL) >> 8;
+  sH := (p.pH + q.pH + carry) & 255;
+
+  r := 0;
+  bit := 1 << 7;
+
+  FOR t:U8 := 0; t < 8; t := t + 1 DO
+    trial := r | bit;
+    sq := U8_MUL_U16(trial, trial);
+    cond1 := sq.pH < sH;
+    cond2 := (sq.pH = sH) & (sq.pL <= sL);
+    less := cond1 | cond2;
+    IF less THEN
+      r := trial;
+    ENDIF;
+    bit := bit >> 1;
+  END;
+
+  len := r;
+  RETURN (len);
+END;
+
+/* ---------- RECIPROCAL ---------- */
+RULE RECIP_S87(x:U8) RETURNS (rinv:U8) IS
+  IF x = 0 THEN
+    rinv := 0;
+    RETURN (rinv);
+  ENDIF;
+
+  xn := x;
+  e := 0;
+
+  FOR i:U8 := 0; i < 7; i := i + 1 DO
+    cond := (xn < 64);
+    IF cond THEN
+      xn := (xn << 1) & 255;
+      e := (e + 1) & 255;
+    ENDIF;
+  END;
+
+  FOR j:U8 := 0; j < 7; j := j + 1 DO
+    cond2 := (xn > 127);
+    IF cond2 THEN
+      xn := xn >> 1;
+      e := (e - 1) & 255;
+    ENDIF;
+  END;
+
+  y := (192 - xn) & 255;
+  xy := S87_MUL(x, y);
+  term := (255 - xy) & 255;
+  y := S87_MUL(y, term);
+
+  is_neg := (e & 128) = 128;
+  IF is_neg THEN
+    ee := ((e ^ 255) + 1) & 255;
+    FOR k:U8 := 0; k < ee; k := k + 1 DO
+      y := (y << 1) & 255;
+    END;
+  ELSE
+    FOR k2:U8 := 0; k2 < e; k2 := k2 + 1 DO
+      msb := y & 128;
+      y := (y >> 1) | msb;
+    END;
+  ENDIF;
+
+  rinv := y;
+  RETURN (rinv);
+END;
+
+/* ---------- NORMALIZE ---------- */
+RULE NORMALIZE2_S87(x:U8, y:U8) RETURNS (ux:U8, uy:U8) IS
+  l := LEN2_S87(x, y);
+  IF l = 0 THEN
+    ux := 0;
+    uy := 0;
+    RETURN (ux, uy);
+  ENDIF;
+  inv := RECIP_S87(l);
+  ux := S87_MUL(x, inv);
+  uy := S87_MUL(y, inv);
+  RETURN (ux, uy);
+END;
+
+/* ---------- RE-ORTHOGONALIZE ---------- */
+RULE REORTHO2_GRAMSCHMIDT(a0:U8, a1:U8, b0:U8, b1:U8)
+  RETURNS (r00:U8, r01:U8, r10:U8, r11:U8, det_pos:BOOL)
+IS
+  n0 := NORMALIZE2_S87(a0, a1);
+  r00 := n0.ux;
+  r10 := n0.uy;
+
+  br := DOT2_S87(b0, b1, r00, r10);
+  t0 := S87_MUL(br, r00);
+  t1 := S87_MUL(br, r10);
+  b0p := (b0 - t0) & 255;
+  b1p := (b1 - t1) & 255;
+
+  n1 := NORMALIZE2_S87(b0p, b1p);
+  r01 := n1.ux;
+  r11 := n1.uy;
+
+  p := S87_MUL(r00, r11);
+  q := S87_MUL(r01, r10);
+  det := (p - q) & 255;
+  det_pos := (det & 128) = 0;
+
+  IF !det_pos THEN
+    r01 := ((r01 ^ 255) + 1) & 255;
+    r11 := ((r11 ^ 255) + 1) & 255;
+    det_pos := TRUE;
+  ENDIF;
+
+  RETURN (r00, r01, r10, r11, det_pos);
+END;
+
+/* ---------- EIGEN DECOMPOSITION ---------- */
+RULE EIGEN_SYM2_S87(a:U8, b:U8, d:U8)
+  RETURNS (lam_min:U8, lam_max:U8, vx:U8, vy:U8)
+IS
+  da := (d - a) & 255;
+  two_b := (b << 1) & 255;
+
+  abs_da := S8_ABS(da);
+  IF abs_da = 0 THEN
+    lam1 := a;
+    lam2 := d;
+    swap := (lam1 > lam2);
+    IF swap THEN
+      lam_min := lam2;
+      lam_max := lam1;
+      vx := 0;
+      vy := 128;
+    ELSE
+      lam_min := lam1;
+      lam_max := lam2;
+      vx := 128;
+      vy := 0;
+    ENDIF;
+    RETURN (lam_min, lam_max, vx, vy);
+  ENDIF;
+
+  inv_da := RECIP_S87(abs_da);
+  neg_da := ((da & 128) = 128);
+  IF neg_da THEN
+    inv_da := ((inv_da ^ 255) + 1) & 255;
+  ENDIF;
+
+  t := S87_MUL(two_b, inv_da);
+  t2 := S87_MUL(t, t);
+  one := 128;
+
+  denom := (one + t2) & 255;
+  root := LEN2_S87(denom, 0);
+  inv_root := RECIP_S87(root);
+  c := S87_MUL(one, inv_root);
+  s := S87_MUL(t, c);
+
+  t_da := S87_MUL(t, da & 255);
+  two_b_minus := (two_b - t_da) & 255;
+  s_term := S87_MUL(s, two_b_minus);
+
+  lam1_a := (a - s_term) & 255;
+  lam2_a := (d + s_term) & 255;
+
+  swap2 := FALSE;
+  IF lam1_a > lam2_a THEN
+    swap2 := TRUE;
+  ENDIF;
+
+  IF !swap2 THEN
+    lam_min := lam2_a;
+    lam_max := lam1_a;
+    vx := ((s ^ 255) + 1) & 255;
+    vy := c;
+  ELSE
+    lam_min := lam1_a;
+    lam_max := lam2_a;
+    vx := c;
+    vy := s;
+  ENDIF;
+
+  RETURN (lam_min, lam_max, vx, vy);
+END;

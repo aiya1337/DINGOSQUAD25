@@ -1,0 +1,49 @@
+================================================================================
+  FILE: C:\USERS\JYE PEARSON\DINGOSQUAD25\LOGS\CSS.JYEC.LOG
+  COMPILER: JYEC.EXE  VERSION 021125
+  MODE:  X64 RELEASE / IPO:ON / Q1.7 FIXED-POINT ENABLED
+================================================================================
+
+[ COMPILATION SUMMARY ]
+  LINES PROCESSED..................... 359
+  NONTERMINALS REDUCED................ 82
+  MACRO EXPANSIONS.................... 0
+  JP MACROS (JPMODE).................. 91
+  FPU.JP99 INLINES.................... 6
+  JPGRAPH NODES PRUNED................ 5
+  HEURISTIC SPECULATIVE PASSES........ 6
+  METAPROGRAMS EXECUTED............... 119 (8 RECURSIVE)
+  METAPROGRAM STACK DEPTH MAX......... 27
+  PHASE MERGES........................ 44
+  SYMBOL TABLE SATURATION............. 62%
+  NAMESPACE ENTROPY................... 3.41 BITS/SYMBOL
+
+[ TIME BREAKDOWN ]
+  PARSE STAGE......................... 00:00:09.441
+  TYPE INFERENCE...................... 00:00:03.209
+  FIXED-POINT EXPANSION (Q1.7)........ 00:00:05.118
+  IPO GRAPH BUILD..................... 00:00:01.222
+  IPO OPTIMIZE........................ 00:00:07.992
+  VECTORIZATION (WIDE512)............. 00:00:04.413
+  EMIT BINARY......................... 00:00:01.151
+  PDB EMIT............................ 00:00:00.509
+  TOTAL BUILD TIME.................... 00:00:33.998
+
+[ MEMORY STATS ]
+  PEAK WORKING SET.................... 178.4 MB
+  SYMBOL HEAP......................... 63.1 MB
+  JPINTERMEDIATE HEAP................. 92.6 MB
+  OPTIMIZER CACHE..................... 21.7 MB
+  LEAK CHECK.......................... 0 WARNINGS
+
+[ WARNINGS ]
+  W8704: FPU.IFC.JP99 [PERFORMANCE] MINOR PIPELINE STALLS AT 128->512 BIT BOUNDARY
+  (1 WARNING TOTAL)
+
+[ OUTPUT ]
+  MODULE INTERFACE GENERATED.......... DINGOSQUAD25\INTF\CSS.IFC.JP99
+  PDB FILE............................ DINGOSQUAD25\PDB\CSS.PDB
+  OBJECT IMAGE........................ DINGOSQUAD25\TMP\CSS.OBJ
+  FINAL LINK IMAGE.................... DINGOSQUAD25\BIN\CSS.DLL
+  STATUS: BUILD SUCCESSFUL (0 ERRORS, 1 WARNING)
+================================================================================

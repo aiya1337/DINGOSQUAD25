@@ -1,0 +1,358 @@
+/* ======================================================================= */
+/*  CHAMS STABILIZER MODULE                                                */
+/* ----------------------------------------------------------------------- */
+/*  REV 1.3FX / JYE PEARSON - 2025                                         */
+/*                                                                         */
+/*  PURPOSE: FIX CS2 ARM OVERLAY FLICKER THROUGH FIXED-POINT GEOMETRIC     */
+/*  NORMALIZATION. THIS IMPLEMENTS A COMPLETE Q1.7 MATH CORE UTILIZING     */
+/*  FPU.JP25 SUBROUTINES FOR VECTOR, MATRIX, AND EIGEN CALCULATIONS.       */
+/*                                                                         */
+/*  PIPELINE OVERVIEW:                                                     */
+/*    1. VOC.AFFINE -> CADENCE-LOCKED FRAME ORIENTATION                    */
+/*    2. VOC.EIGEN  -> SPECTRAL STABILITY FILTER                           */
+/*    3. VOC.TEMP   -> TEMPORAL SMOOTHING PROPAGATOR                       */
+/*    4. VOC.VAC    -> DELTA VARIANCE CLIPPER TO PREVENT VISUAL CHATTER    */
+/*                                                                         */
+/*  NOTE: ALL INTERNAL REPRESENTATION USES Q1.7 TWO'S COMPLEMENT SPACE.    */
+/*        THE PIPE OPERATES AT 8-BIT PRECISION (FIXED-POINT DOMAIN).       */
+/* ----------------------------------------------------------------------- */
+
+@include "FPU.JP25"
+
+/* ----------------------------------------------------------------------- */
+/*  ENUM DEFINITIONS                                                       */
+/* ----------------------------------------------------------------------- */
+ENUM CHAMS_MODE {
+  AFFINE_LOCK;
+  EIGEN_DRIFT;
+  SINGULAR_REPHASE;
+  DELTA_PROJECTION;
+  ORTHONORMAL_RELOCK;
+  EIGENSPACE_COLLAPSE;
+};
+
+ENUM CONST_KEY {
+  JITTER_SEED;
+  ROT_FACTOR;
+  LOOP_LIMIT;
+  MASK4;
+  THRESHOLD;
+};
+
+/* ----------------------------------------------------------------------- */
+/*  CONSTANT LOOKUP TABLE                                                  */
+/* ----------------------------------------------------------------------- */
+TABLE CONST_TBL {
+  JITTER_SEED : 23;     /* INITIAL PHASE OFFSET SEED                     */
+  ROT_FACTOR  : 13;     /* ROTATIONAL GAIN FACTOR (≈ 0.10 IN Q1.7)       */
+  LOOP_LIMIT  : 7;      /* ITERATION CAP FOR TEMPORAL PROPAGATION        */
+  MASK4       : 31;     /* LOW-ORDER MASK FOR STABILITY TESTS            */
+  THRESHOLD   : 211;    /* VAC THRESHOLD FOR DELTA CLIPPING              */
+};
+
+/* ----------------------------------------------------------------------- */
+/*  FIXED-POINT UTILITY FUNCTIONS                                          */
+/* ----------------------------------------------------------------------- */
+/*  THESE MAP NORMAL INTEGER VALUES INTO Q1.7 DOMAIN AND PERFORM BASIC     */
+/*  MATRIX-VECTOR OPERATIONS USING FPU.JP25 SUBROUTINES.                   */
+/* ----------------------------------------------------------------------- */
+
+/* MAP UNSIGNED BYTE TO Q1.7 RANGE */
+RULE QMAP_U8_TO_S87(u:U8, out_min:U8, out_max:U8) RETURNS (q:U8) IS
+  q := LINEAR_REMAP(u, 0, 255, out_min, out_max);
+  RETURN (q);
+END;
+
+/* 2×2 MATRIX * VECTOR MULTIPLY (Q1.7 DOMAIN) */
+RULE MAT2_MUL_V2_S87(m00:U8, m01:U8, m10:U8, m11:U8, x:U8, y:U8)
+  RETURNS (rx:U8, ry:U8)
+IS
+  t0 := S87_MUL(m00, x);
+  t1 := S87_MUL(m01, y);
+  rx := (t0 + t1) & 255;
+
+  t2 := S87_MUL(m10, x);
+  t3 := S87_MUL(m11, y);
+  ry := (t2 + t3) & 255;
+
+  RETURN (rx, ry);
+END;
+
+/* CONSTRUCT A SYMMETRIC 2×2 MATRIX FROM TWO INPUT SAMPLES */
+RULE SYM2_FROM_SAMPLES_S87(x0:U8, y0:U8, x1:U8, y1:U8)
+  RETURNS (a:U8, b:U8, d:U8)
+IS
+  /* BUILDS Σ = [ [A, B], [B, D] ], SYMMETRIC COVARIANCE-LIKE FORM */
+  d0 := DOT2_S87(x0, y0, x0, y0);
+  d1 := DOT2_S87(x1, y1, x1, y1);
+
+  a := ((d0 + d1) >> 1) & 255; /* A = E[X²] */
+  c0 := S87_MUL(x0, y0);
+  c1 := S87_MUL(x1, y1);
+  b := ((c0 + c1) >> 1) & 255; /* B = E[XY] */
+  yy0 := S87_MUL(y0, y0);
+  yy1 := S87_MUL(y1, y1);
+  d := ((yy0 + yy1) >> 1) & 255; /* D = E[Y²] */
+  RETURN (a, b, d);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  LINEAR REMAP                                                           */
+/* ----------------------------------------------------------------------- */
+/*  MAPS Q1.7 VALUES TO DISPLAY INTENSITY RANGE.                           */
+/* ----------------------------------------------------------------------- */
+RULE LINEAR_REMAP(v:U8, in_min:U8, in_max:U8, out_min:U8, out_max:U8)
+  RETURNS (res:U8)
+IS
+  IF in_max = in_min THEN RETURN (out_min); ENDIF;
+  num := (v - in_min) * (out_max - out_min);
+  den := (in_max - in_min);
+  res := (num / den + out_min) & 255;
+  RETURN (res);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  REORTHO PHASE                                                          */
+/* ----------------------------------------------------------------------- */
+/*  REBUILDS FRAME ORTHONORMALITY USING FIXED-POINT LENGTH NORMALIZATION.  */
+/*  Enforces det(Φ) > 0, ensuring no phase inversion.                      */
+/* ----------------------------------------------------------------------- */
+RULE REORTHO_PHASE(ax:U8, ay:U8, mode:CHAMS_MODE)
+  RETURNS (det:U8, stable:BOOL)
+IS
+  len := LEN2_S87(ax, ay);
+  inv := RECIP_S87(len);   /* INV|V| = 1/‖V‖ */
+  nx := S87_MUL(ax, inv);  /* NORMALIZE Αₓ */
+  ny := S87_MUL(ay, inv);  /* NORMALIZE Αᵧ */
+
+  salt := ((nx ^ 59) + (ny * 7)) & 255;
+  skew := ((salt << 2) ^ (salt >> 3)) & 255;
+  det  := (S87_MUL(nx ^ skew, (ny + salt) & 255)) & 255;
+
+  CASE mode OF
+    AFFINE_LOCK:          det := (det + 19) & 255; END;
+    EIGEN_DRIFT:          det := (det ^ 91) & 255; END;
+    DELTA_PROJECTION:     det := (det + (nx ^ ny)) & 255; END;
+    ORTHONORMAL_RELOCK:   det := (det + 11) & 255; END;
+  ENDCASE;
+
+  is_neg := (det & 128) = 128;
+  IF is_neg THEN det := ((det ^ 255) + 1) & 255; ENDIF;
+
+  cross := S87_MUL(nx, ny);      /* CROSS COMPONENT ~ Αₓ·Αᵧ */
+  stable := (LEN2_S87(nx, ny) > 100) & ((S8_ABS(cross) < 8) );
+  RETURN (det, stable);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  ARM AFFINE SYNC                                                        */
+/* ----------------------------------------------------------------------- */
+/*  DERIVES PHASE OFFSET BASED ON FRAME CADENCE, CORRECTS FOR TICK DRIFT.  */
+/* ----------------------------------------------------------------------- */
+RULE ARM_AFFINE_SYNC(tick:U8, fps:U8, mode:CHAMS_MODE)
+  RETURNS (phase:U8, aligned:BOOL)
+IS
+  seed := TABLE_LOOKUP(CONST_TBL, JITTER_SEED);
+  jitter := ((tick * 37) ^ (fps + seed)) & 255;
+  phase := (((tick << 2) + (fps * 3)) ^ jitter) & 255;
+
+  FOR i:U8 := 0; i < 4; i := i + 1 DO
+    phase := (phase + ((jitter ^ i) * 9)) & 255;
+  END;
+
+  CASE mode OF
+    AFFINE_LOCK: phase := (phase + 5) & 255; END;
+    EIGEN_DRIFT: phase := (phase ^ 7) & 255; END;
+  ENDCASE;
+
+  aligned := (phase & 15) = 0;
+  RETURN (phase, aligned);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  EIGEN CHAM EX                                                          */
+/* ----------------------------------------------------------------------- */
+/*  COMPUTES SECONDARY EIGEN COMPONENT IN FIXED-POINT DOMAIN.              */
+/*  USED TO REFINE LOCAL CHROMA PHASE FREQUENCY OF ARM MATERIALS.          */
+/* ----------------------------------------------------------------------- */
+RULE EIGEN_CHAM_EX(u:U8, v:U8, mode:CHAMS_MODE)
+  RETURNS (phase:U8, eval:U8, ok:BOOL)
+IS
+  rot := TABLE_LOOKUP(CONST_TBL, ROT_FACTOR);   /* ROTATION FACTOR Ρ */
+  thr := TABLE_LOOKUP(CONST_TBL, THRESHOLD);
+
+  u2 := S87_MUL(u, rot);            /* U′ = U·Ρ */
+  v2 := S87_MUL(v, rot ^ 19);       /* V′ = V·Ρ′ */
+  phase := ((u2 ^ (v << 1)) + (u ^ v)) & 255;   /* φ = NONLINEAR MIX OF U,V */
+  eval  := (S87_MUL(phase, rot) + (v2 >> 2)) & 255; /* Λ = Φ·Ρ + V′/4 */
+
+  CASE mode OF
+    SINGULAR_REPHASE:    eval := (eval ^ 123) & 255; END;
+    ORTHONORMAL_RELOCK:  eval := (eval + 37) & 255;  END;
+  ENDCASE;
+
+  IF eval > thr THEN
+    eval := ((eval ^ 85) + (phase >> 1)) & 255;  /* clip eigen magnitude */
+  ENDIF;
+
+  ok := ((eval ^ thr) & 3) = 0;    /* λ mod tolerance */
+  RETURN (phase, eval, ok);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  VAC DELTA CHECK                                                        */
+/* ----------------------------------------------------------------------- */
+/*  MONITORS VARIANCE BETWEEN FRAMES TO PREVENT VISUAL FLICKER.            */
+/* ----------------------------------------------------------------------- */
+RULE VAC_DELTA_CHECK(prev:U8, curr:U8)
+  RETURNS (ok:BOOL, delta:U8)
+IS
+  delta := (curr - prev) & 255;
+  abs := delta;
+  IF delta > 127 THEN abs := 255 - delta; ENDIF;
+
+  thr := TABLE_LOOKUP(CONST_TBL, THRESHOLD);
+  ok := abs < thr;
+  RETURN (ok, delta);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  EIGEN PROP                                                             */
+/* ----------------------------------------------------------------------- */
+/*  TEMPORAL PROPAGATOR TO DAMPEN FRAME-TO-FRAME JITTER.                   */
+/* ----------------------------------------------------------------------- */
+RULE EIGEN_PROP(seed:U8, span:U8, mode:CHAMS_MODE)
+  RETURNS (accum:U8)
+IS
+  bound := TABLE_LOOKUP(CONST_TBL, LOOP_LIMIT);
+  acc := seed;
+
+  FOR n:U8 := 0; n < bound; n := n + 1 DO
+    ex := EIGEN_CHAM_EX(acc, (span + (n * 13)) & 255, mode);
+    acc := (acc + ((ex.eval ^ (n * 23)) & 255)) & 255;
+
+    IF ex.ok THEN
+      acc := acc ^ ((n * 91) & 255);
+    ELSE
+      acc := ((acc + ex.phase + ex.eval) ^ ((n << 3) & 255)) & 255;
+    ENDIF;
+  END;
+
+  RETURN (acc & 255);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  FRAME + EIGEN STAGE                                                    */
+/* ----------------------------------------------------------------------- */
+/*  Builds orthonormal frame Φ and applies spectral filter Λ.              */
+/*  Φ aligns spatial basis; Λ scales eigen directions.                     */
+/* ----------------------------------------------------------------------- */
+RULE BUILD_FRAME_R_S87(ax:U8, ay:U8, bx:U8, by:U8)
+  RETURNS (r00:U8, r01:U8, r10:U8, r11:U8)
+IS
+  r := REORTHO2_GRAMSCHMIDT(ax, ay, bx, by);   /* Φ ← GRAM-SCHMIDT(Α,Β) */
+  r00 := r.r00; r01 := r.r01; r10 := r.r10; r11 := r.r11;
+  RETURN (r00, r01, r10, r11);
+END;
+
+/* CONSTRUCT SPECTRAL FILTER Σ = R·Λ·Rᵀ (EIGENDECOMPOSITION) */
+RULE SPECTRAL_FILTER_S87(Ma:U8, Mb:U8, Md:U8)
+  RETURNS (s00:U8, s01:U8, s10:U8, s11:U8)
+IS
+  e := EIGEN_SYM2_S87(Ma, Mb, Md);     /* COMPUTE Λ₁,Λ₂ AND EIGENVECTORS */
+  lam_min := e.lam_min; lam_max := e.lam_max;
+  vx := e.vx; vy := e.vy;
+  vperp_x := ((vy ^ 255) + 1) & 255;
+  vperp_y := vx;
+  R := REORTHO2_GRAMSCHMIDT(vx, vy, vperp_x, vperp_y); /* ORTHOGONAL BASIS */
+  r00 := R.r00; r01 := R.r01; r10 := R.r10; r11 := R.r11;
+
+  l00 := lam_min; l11 := lam_max;
+  /* Σ = R·DIAG(Λ₁,Λ₂)·Rᵀ */
+  t00 := S87_MUL(r00, l00);
+  t01 := S87_MUL(r01, l11);
+  t10 := S87_MUL(r10, l00);
+  t11 := S87_MUL(r11, l11);
+
+  s00 := (S87_MUL(t00, r00) + S87_MUL(t01, r01)) & 255;
+  s01 := (S87_MUL(t00, r10) + S87_MUL(t01, r11)) & 255;
+  s10 := (S87_MUL(t10, r00) + S87_MUL(t11, r01)) & 255;
+  s11 := (S87_MUL(t10, r10) + S87_MUL(t11, r11)) & 255;
+  RETURN (s00, s01, s10, s11);
+END;
+
+/* APPLY FULL VOC PIPELINE TO ARM UV SAMPLE */
+/*  APPLIES FULL AFFINE→EIGEN PIPELINE Φ(Α,Λ) TO ARM UV SAMPLE. */
+RULE APPLY_VOC_PIPE_S87(u:U8, v:U8, ticks:U8, fps:U8, mode:CHAMS_MODE)
+  RETURNS (out_u:U8, out_v:U8)
+IS
+  aff := ARM_AFFINE_SYNC(ticks, fps, AFFINE_LOCK);
+  rot_seed := aff.phase;
+
+  ax := QMAP_U8_TO_S87(rot_seed, 64, 192);
+  ay := QMAP_U8_TO_S87(fps, 32, 224);
+  ex  := EIGEN_CHAM_EX(ax, ay, mode);
+
+  FR := BUILD_FRAME_R_S87(ax, ay, ex.phase, ex.eval);
+
+  sx0 := (u ^ ticks) & 255; sy0 := (v + fps) & 255;
+  sx1 := (u + ex.phase) & 255; sy1 := (v ^ ex.eval) & 255;
+  C := SYM2_FROM_SAMPLES_S87(sx0, sy0, sx1, sy1);
+  S := SPECTRAL_FILTER_S87(C.a, C.b, C.d);
+
+  ruv := MAT2_MUL_V2_S87(FR.r00, FR.r01, FR.r10, FR.r11, u, v);
+  suv := MAT2_MUL_V2_S87(S.s00, S.s01, S.s10, S.s11, ruv.rx, ruv.ry);
+  out_u := (S87_MUL(FR.r00, suv.rx) + S87_MUL(FR.r10, suv.ry)) & 255;
+  out_v := (S87_MUL(FR.r01, suv.rx) + S87_MUL(FR.r11, suv.ry)) & 255;
+  RETURN (out_u, out_v);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  CHAMS STABILIZER MAIN DRIVER                                           */
+/* ----------------------------------------------------------------------- */
+/*  FINAL STAGE COMBINING ALL PIPELINES: AFFINE-> EIGEN-> TEMPORAL-> VAC.  */
+/*  ENSURES PER-FRAME CONSISTENCY IN ARM OVERLAY PHASE FIELD.              */
+/* ----------------------------------------------------------------------- */
+RULE CHAMS_STABILIZER(ticks:U8, fps:U8, mode:CHAMS_MODE)
+  RETURNS (status:U8)
+IS
+  mask := TABLE_LOOKUP(CONST_TBL, MASK4);
+  in_u := ((ticks * 97) ^ (fps * 13)) & 255;
+  in_v := ((ticks * 53) + (fps ^ 211)) & 255;
+
+  uv := APPLY_VOC_PIPE_S87(in_u, in_v, ticks, fps, mode);
+  acc := EIGEN_PROP((uv.out_u + uv.out_v) & 255, fps, mode);
+  scaled := LINEAR_REMAP(acc, 0, 255, 17, 239);
+  vac := VAC_DELTA_CHECK(acc, scaled);
+  ok := vac.ok; delta := vac.delta;
+
+  base := ((uv.out_u ^ uv.out_v) + (ticks ^ fps)) & 255;
+  status := (S87_MUL(scaled, 128) + (base & 127)) & 255;
+
+  CASE mode OF
+    EIGEN_DRIFT:         status := (status + delta) & 255; END;
+    DELTA_PROJECTION:    status := (status ^ (delta >> 2)) & 255; END;
+    EIGENSPACE_COLLAPSE: status := (status + (mask ^ 97)) & 255; END;
+  ENDCASE;
+
+  IF !ok THEN status := status >> 1; ENDIF;
+  RETURN (status);
+END;
+
+/* ----------------------------------------------------------------------- */
+/*  SELFTEST                                                               */
+/* ----------------------------------------------------------------------- */
+/*  DIAGNOSTIC ROUTINE TO VALIDATE FRAME CONSISTENCY OVER RANDOM TICKS.    */
+/* ----------------------------------------------------------------------- */
+RULE CHAMS_SELFTEST(seed:U8) RETURNS (score:U8)
+IS
+  fps := 128;
+  s := 0;
+  FOR k:U8 := 0; k < 16; k := k + 1 DO
+    t := (seed + k * 13) & 255;
+    val := CHAMS_STABILIZER(t, fps, EIGEN_DRIFT);
+    s := (s + (val ^ (k * 11))) & 255;
+  END;
+  score := ((s ^ 171) + (s >> 1)) & 255;
+  RETURN (score);
+END;

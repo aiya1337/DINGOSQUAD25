@@ -1,0 +1,190 @@
+// SWITCHBUS BUILD SPECIFICATION v1.0
+// Workspace: DINGOSQUAD25
+
+PRAGMA STRICT ON;
+PRAGMA DIAGNOSTICS W4, WX;
+PRAGMA STRUCT_PACK 16;
+
+// -----------------------------------------------------------------------------
+// ENVIRONMENT
+// -----------------------------------------------------------------------------
+
+ENV SWITCHBUS {
+  COMPILER := "C:\\TOOLS\\JYEC\\JYEC.EXE";
+  SDK_HOME := "C:\\SDK\\JYECORE\\JP99\\";
+  SRC_HOME := "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\SRC\\";
+  OUT_HOME := "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\BIN\\";
+  INT_HOME := "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\INTF\\";
+  TMP_HOME := "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\BIN\\";
+  PDB_HOME := "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\PDB\\";
+  LOG_HOME := "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\LOGS\\";
+}
+
+// -----------------------------------------------------------------------------
+// DEFAULTS
+// -----------------------------------------------------------------------------
+
+DEFAULTS {
+  TOOLCHAIN := x64;
+  CONFIG    := Release;
+  TOOLTAG   := "x64-avx512";
+}
+
+// -----------------------------------------------------------------------------
+// SEARCH PATHS
+// -----------------------------------------------------------------------------
+
+INCLUDE_PATHS := [
+  "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\INCLUDE\\",
+  "$(SDK_HOME)INCLUDE\\",
+  "$(SRC_HOME)"
+];
+
+LIB_PATHS := [
+  "C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\LIB\\",
+  "$(SDK_HOME)LIB\\",
+  "$(OUT_HOME)"
+];
+
+// -----------------------------------------------------------------------------
+// FLAGS
+// -----------------------------------------------------------------------------
+
+FLAGS.COMMON := [
+  "/I:\"C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\INCLUDE\\\"",
+  "/I:\"$(SDK_HOME)INCLUDE\\\"",
+  "/I:\"$(SRC_HOME)\"",
+  "/LIBPATH:\"C:\\USERS\\JYE PEARSON\\DINGOSQUAD25\\LIB\\\"",
+  "/LIBPATH:\"$(SDK_HOME)LIB\\\"",
+  "/LIBPATH:\"$(OUT_HOME)\"",
+  "/D:JP_VERSION=99",
+  "/D:Q_FIXED=Q1_7",
+  "/Jp:V64x",
+  "/Rw:512",
+  "/ipo",
+  "/O2",
+  "/MD",
+  "/WX",
+  "/W4",
+  "/Zp:16",
+  "/Ql:compliant"
+];
+
+// -----------------------------------------------------------------------------
+// RULES
+// -----------------------------------------------------------------------------
+
+RULE "BUILD-MODULE" (
+  TARGET  : id,
+  SOURCE  : path,
+  DEFINES : list<string> = [],
+  LINKS   : list<string> = []
+) {
+  INVOKE := """
+    $(COMPILER)
+      /build:DINGOSQUAD25
+      /toolchain:$(TOOLCHAIN)
+      /config:$(CONFIG)
+      /target:$(TARGET)
+      /mod-iface:$(INT_HOME)
+      /tmp:$(TMP_HOME)$(TARGET)\\
+      /Fo:$(TMP_HOME)$(TARGET)\\
+      /Fd:$(PDB_HOME)$(TARGET).$(CONFIG).PDB
+      /pdb:$(PDB_HOME)$(TARGET).$(CONFIG).PDB
+      /log:$(LOG_HOME)$(TARGET).$(TOOLTAG).$(CONFIG).LOG
+      /Fe:$(OUT_HOME)$(TARGET).DLL
+      /JYEMODULE:IFACE-OUT=$(INT_HOME)
+      /JLTO:ipoInterface
+      /Wx:HIGH
+      $(FLAGS.COMMON)
+      $(DEFINES)
+      $(SOURCE)
+      $(LINKS)
+  """;
+}
+
+// -----------------------------------------------------------------------------
+// TARGETS
+// -----------------------------------------------------------------------------
+
+TARGET "CSS" {
+  SOURCE  := "\"$(SRC_HOME)CSS.JP99\"";
+  DEFINES := [ "/D:MODULE=CSS", "/D:LINK_PARENT=NONE" ];
+  LINKS   := [ "FPU" ];
+  USE RULE "BUILD-MODULE";
+}
+
+TARGET "FPU" {
+  SOURCE  := "\"$(SRC_HOME)FPU.JP99\"";
+  DEFINES := [ "/D:MODULE=FPU" ];
+  USE RULE "BUILD-MODULE";
+}
+
+// -----------------------------------------------------------------------------
+// AGGREGATE TARGETS
+// -----------------------------------------------------------------------------
+
+ALIAS "DINGO-STD" {
+  DESCRIPTION := "Standard core runtime module set.";
+  DEPENDS.ON  := [ "CSS" ];
+  BUILD.MODE  := SEQUENTIAL;
+  VISIBILITY  := PUBLIC;
+}
+
+ALIAS "DINGO-AFFINE" {
+  DESCRIPTION := "Extended runtime set with affine computation support.";
+  DEPENDS.ON  := [ "CSS", "FPU" ];
+  BUILD.MODE  := PARALLEL;
+  VISIBILITY  := PUBLIC;
+}
+
+ALIAS "BUILD-ALL" {
+  DESCRIPTION := "Complete build of all runtime modules.";
+  DEPENDS.ON  := [ "DINGO-STD", "DINGO-AFFINE" ];
+  BUILD.MODE  := HIERARCHICAL;
+  VISIBILITY  := PUBLIC;
+  EXPORTS     := [ "OUT_HOME", "INT_HOME", "PDB_HOME" ];
+}
+
+// -----------------------------------------------------------------------------
+// SOURCE SETS
+// -----------------------------------------------------------------------------
+
+SOURCES.ACTIVE := [
+  "$(SRC_HOME)CSS.JP99",
+  "$(SRC_HOME)FPU.JP99"
+  ; "$(SRC_HOME)LDR.JP99"
+  ; "$(SRC_HOME)MM.JP99"
+  ; "$(SRC_HOME)UNASM.JP99"
+  ; "$(SRC_HOME)GAME_HOOKS.JP99"
+  ; "$(SRC_HOME)DRAW.JP99"
+  ; "$(SRC_HOME)DX11_BIND.JP99"
+  ; "$(SRC_HOME)IMGUI_BIND.JP99"
+  ; "$(SRC_HOME)HWID.JP99"
+  ; "$(SRC_HOME)COMMS.JP99"
+  ; "$(SRC_HOME)UI.JP99"
+  ; "$(SRC_HOME)WIN32.JP99"
+  ; "$(SRC_HOME)JIT.JP99"
+  ; "$(SRC_HOME)CLI.JP99"
+  ; "$(SRC_HOME)SOURCE2_IFACE.JP99"
+];
+
+// -----------------------------------------------------------------------------
+// MAINTENANCE
+// -----------------------------------------------------------------------------
+
+ALIAS "CLEAN" {
+  DELETE TREE  "$(OUT_HOME)";
+  DELETE TREE  "$(TMP_HOME)";
+  DELETE TREE  "$(INT_HOME)";
+  ; DELETE TREE  "$(LOG_HOME)";
+  DELETE FILE  "$(PDB_HOME)DINGOSQUAD25*.PDB";
+}
+
+// -----------------------------------------------------------------------------
+// ENTRYPOINT
+// -----------------------------------------------------------------------------
+
+ENTRYPOINT {
+  BUILD "BUILD-ALL";
+}

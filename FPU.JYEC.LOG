@@ -1,0 +1,46 @@
+================================================================================
+  FILE: C:\USERS\JYE PEARSON\DINGOSQUAD25\LOGS\FPU.JYEC.LOG
+  COMPILER: JYEC.EXE  VERSION 021125
+  MODE:  X64 RELEASE / IPO:ON / Q1.7 FIXED-POINT ENABLED
+================================================================================
+
+[ SUMMARY ]
+  LINES COMPILED...................... 280
+  NONTERMINALS REDUCED................ 12
+  JP99 INTRINSICS EXPANDED............ 129
+  OPTIMIZER PASSES.................... 7
+  EMIT MODE........................... OBJECT(.JYEOBJECT)
+  OBJECT LINKAGE...................... REFERENCED BY CSS BUILD (AFFINE/EIGEN CORE)
+  SHARED Q-DOMAIN..................... Q1.7 / JP99-FAST
+  JPGRAPH ALIGNMENT................... SYNCHRONIZED WITH JYE GRAPH NODE OFFSETS
+  META-SYMBOL CORRELATION............. 100% (JYEC::INTEGRATION_OK)
+  FIXED-POINT FOLDBACKS............... 31
+  INLINE PROPAGATION.................. CSS CONTEXT MATCHED
+  FLOATING UNIT MAP................... [JP99::S87_MUL, JP99::DOT2_S87]
+  VECTORIZATION COVERAGE.............. FULL (WIDE512)
+  BUILD DURATION...................... 00:00:03.462
+  OBJECT SIZE......................... 0.4 KB
+  STATUS: OK (0 ERRORS / 0 WARNINGS)
+
+[ INTERLINK CONTEXT ]
+  LINKED PARENT....................... CSS.JP99
+  SHARED SYMBOLS...................... 6 (S87_MUL, DOT2_S87, LEN2_S87, RECIP_S87, EIGEN_SYM2_S87, REORTHO2_GRAMSCHMIDT)
+  BUILD PHASE COUPLING................ QMAP PREPASS / AFFINE_LOCK ROUTINE
+  CSS REFERENCE HASH.................. 0X44F2A9DE
+  DEPENDENCY RESOLVE LATENCY.......... 0.002S
+  DETECTED CROSS-IPO ANNOTATIONS...... 3 [ALIGN_VECTOR_Q1.7, USE_FAST_RECIP, DET_SATURATE]
+
+[ MEMORY STATS ]
+  PEAK WORKING SET.................... 42.3 MB
+  SYMBOL HEAP......................... 8.9 MB
+  JPINTERMEDIATE HEAP................. 12.6 MB
+  OPTIMIZER CACHE..................... 3.2 MB
+  LEAK CHECK.......................... 0 WARNINGS
+
+[ OUTPUT ]
+  MODULE INTERFACE GENERATED.......... DINGOSQUAD25\INTF\FPU.IFC.JP99
+  LINK OBJECT......................... DINGOSQUAD25\BIN\FPU.DLL
+
+  DINGOSQUAD25\TMP\FPU.JYEOBJECT
+  STATUS: LINKABLE OBJECT READY (DEPENDENT ON CSS.DLL)
+================================================================================
